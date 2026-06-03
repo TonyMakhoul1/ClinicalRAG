@@ -35,6 +35,14 @@ def ingestion():
             }
         )
 
+    # Wipe the existing collection so re-running ingestion never duplicates chunks.
+    existing = Chroma(
+        persist_directory=settings.VECTOR_STORE_DIR,
+        embedding_function=embeddings,
+        collection_name=settings.COLLECTION_NAME,
+    )
+    existing.delete_collection()
+
     vector_store = Chroma.from_documents(
         documents=chunks,
         persist_directory=settings.VECTOR_STORE_DIR,

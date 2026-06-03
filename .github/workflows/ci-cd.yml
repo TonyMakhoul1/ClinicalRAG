@@ -115,12 +115,28 @@ jobs:
       - name: Log in to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Pull & restart
+      - name: Pull images
         env:
           ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
           ECR_REPO:     ${{ secrets.ECR_REPO }}
           IMAGE_TAG:    ${{ needs.build-push.outputs.image_tag }}
         run: |
           docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+
+      - name: Run ingestion
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          ECR_REPO:     ${{ secrets.ECR_REPO }}
+          IMAGE_TAG:    ${{ needs.build-push.outputs.image_tag }}
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+            --profile tools run --rm ingestion
+
+      - name: Start services
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          ECR_REPO:     ${{ secrets.ECR_REPO }}
+          IMAGE_TAG:    ${{ needs.build-push.outputs.image_tag }}
+        run: |
           docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
           docker image prune -f

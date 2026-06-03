@@ -8,3 +8,6 @@ services:
 
   streamlit:
     image: ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+
+  ingestion:
+    image: ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
