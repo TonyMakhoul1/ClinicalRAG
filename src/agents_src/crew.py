@@ -3,7 +3,6 @@ from src.agents_src.tasks import planning_task, research_task, synthesis_task
 from src.agents_src.agents import planner_agent, researcher_agent, synthesizer_agent
 from src.utils.retry import groq_retry
 from crewai import Crew, Process
-import os
 import time
 import structlog
 import litellm

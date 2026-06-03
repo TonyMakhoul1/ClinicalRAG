@@ -75,6 +75,9 @@ def build_samples() -> list[SingleTurnSample]:
                 reference=item["reference"],
             )
         )
+        if i < len(TEST_SET):
+            print("Waiting 65s between questions...")
+            time.sleep(65)
 
     return samples
 
