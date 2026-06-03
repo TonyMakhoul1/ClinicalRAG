@@ -204,7 +204,7 @@ def push_to_langsmith(df: pd.DataFrame) -> None:
         )
 
     print(f"  Done - go to smith.langchain.com -> Projects -> {project}")
-    print(f"  Filter by tag 'ragas-evaluation' to see all evaluation runs.")
+    print("Filter by tag 'ragas-evaluation' to see all evaluation runs.")
 
 
 if __name__ == "__main__":
