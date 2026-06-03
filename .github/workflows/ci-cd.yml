@@ -97,9 +97,11 @@ jobs:
               ("LANGSMITH_API_KEY",    os.environ.get("LANGSMITH_API_KEY", "")),
               ("LOG_FORMAT",           "json"),
           ]
-          # Single-quote all values so Docker Compose never interpolates $ chars
+          # Strip surrounding quotes a user may have included in the secret value,
+          # then single-quote everything so Docker Compose never interpolates $ chars.
           with open(".env", "w") as f:
               for key, val in pairs:
+                  val = val.strip("'\"")
                   f.write(f"{key}='{val}'\n")
           PYEOF
 
