@@ -103,10 +103,13 @@ jobs:
                   f.write(f"{key}='{val}'\n")
           PYEOF
 
+      - name: Configure AWS credentials (uses EC2 instance IAM role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-west-2
+
       - name: Log in to ECR
-        run: |
-          aws ecr get-login-password --region eu-west-2 \
-            | docker login --username AWS --password-stdin "${{ secrets.ECR_REGISTRY }}"
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Pull & restart
         env:
