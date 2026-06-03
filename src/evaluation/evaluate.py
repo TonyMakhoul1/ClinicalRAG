@@ -75,9 +75,6 @@ def build_samples() -> list[SingleTurnSample]:
                 reference=item["reference"],
             )
         )
-        if i < len(TEST_SET):
-            print(f"  Waiting 65s for Groq rate limit to reset...")
-            time.sleep(65)
 
     return samples
 
