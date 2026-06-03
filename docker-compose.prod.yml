@@ -1,0 +1,10 @@
+# docker-compose.prod.yml — production image override
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Instead of building image locally, use the already exist image in AWS ECR
+services:
+  backend:
+    image: ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+
+  streamlit:
+    image: ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}

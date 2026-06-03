@@ -1,0 +1,25 @@
+# The virtual environment is never copied into the image.
+# Docker installs dependencies fresh inside the image via uv sync.
+# Including .venv would add gigabytes and shadow the image's own packages.
+.venv/
+
+# Git history is irrelevant inside a container.
+.git/
+
+# Python bytecode is platform-specific and regenerated automatically.
+__pycache__/
+*.pyc
+*.pyo
+
+# The .env file must NEVER go into the image — it contains secrets.
+# Secrets are injected at runtime via docker compose env_file or environment:.
+.env
+
+# The persisted vector store lives on a Docker volume, not baked into the image.
+# Baking it in would mean every code change forces a full re-ingest.
+vector_store_dir/
+test_vector_store_dir/
+
+# Claude Code memory and project docs — not needed at runtime.
+.claude/
+*.md

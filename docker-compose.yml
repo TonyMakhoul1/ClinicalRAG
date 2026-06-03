@@ -1,0 +1,177 @@
+# docker-compose.yml: orchestrates all services for the project.
+# Start everything: docker compose up --build
+# Stop everything: docker compose down
+# Run ingestion separately: docker compose --profile tools run --rm ingestion
+
+services:
+
+  # redis/redis-stack-server bundles RedisSearch (FT.* commands) which redisvl needs
+  # for vector index creation. Plain redis:7-alpine does not include RedisSearch.
+  redis:
+    image: redis/redis-stack-server:latest
+
+    # Expose Redis to the host machine on the standard port.
+    # "host_port:container_port".
+    ports:
+      - "6379:6379"
+
+    # Without this volume every "docker compose down" wipes the semantic cache
+    # so every restart the cache will be empty
+    # /data is the directory Redis uses for persistence
+    volumes:
+      - redis_data:/data
+
+    # healthcheck: docker runs this command every 5 seconds, without health check
+    # docker only knows when the container started, don't know when is ready.
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s # run the check every 5 seconds
+      timeout: 3s # if redis-cli doesn't respond in 3s, count it as failed
+      retries: 5 # fail the health check only after 5 consecutive failures
+
+  backend:
+    # Build the image from the Dockerfile
+    build:
+      context: . # sends the entire project directory
+      dockerfile: Dockerfile
+
+    # Run, in docker no --reload, in a container the files don't change at runtime,
+    # (rebuild the image instead).
+    command: uv run uvicorn src.backend_src.api.app:app --host 0.0.0.0 --port 8000
+
+    ports:
+      - "8000:8000"
+
+    # loads the variables from .env, never baked into the image
+    # we excluded it in the .dockerignore
+    env_file:
+      - .env
+
+    # environment: overrides specific variables after env_file is loaded.
+    environment:
+      # Override the Redis URL to redis instead of localhost
+      - REDIS_URL=redis://redis:6379
+
+      # Override the vector store path to point inside the container.
+      - VECTOR_STORE_DIR=/app/vector_store
+
+      # JSON logs inside Docker 
+      - LOG_FORMAT=json
+
+    volumes:
+      # Everything inside the /app/vector_store inside the container
+      # should be saved in Docker's persistent volume called vector_store
+      - vector_store:/app/vector_store
+
+      # Save HuggingFace downloaded models in a persistent Docker volume 
+      # so they are not re-downloaded everytime the container restarts
+      # huggingface_cache : permanent storage of hf models
+      # /root/.cache/huggingface: where hf stores downloaded models inside the container
+      - huggingface_cache:/root/.cache/huggingface
+
+    # Docker will not start the backend until Redis passes its health check
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ── Streamlit frontend ─────────────────────────────────────────────────────
+  streamlit:
+    # Reuse the same image as backend, (same code, different command)
+    # Docker use the already-built image without rebuilding
+    build:
+      context: . # sends the entire project directory (docker can access everything in my project)
+      dockerfile: Dockerfile
+
+    # > : override the default CMD in the Dockerfile
+    # --server.address 0.0.0.0 : make streamlit accessible outside the container
+    command: >
+      uv run streamlit run src/frontend_src/app.py --server.address 0.0.0.0 --server.port 8501
+
+    ports:
+      - "8501:8501"
+
+    env_file:
+      - .env
+
+    environment:
+      # Override these two variable, instead of local host
+      # let them pointed to the backend container "backend"
+      - CHAT_ENDPOINT_URL=http://backend:8000/chat/answer
+      - CHAT_STREAM_URL=http://backend:8000/chat/stream
+      - AUTH_URL=http://backend:8000/auth/login
+
+    # The frontend only needs to start after the backend is up.
+    depends_on:
+      - backend
+
+  # This service runs the document ingestion pipeline and then exits.
+  # It is NOT started by `docker compose up` it only runs when you explicitly
+  #   docker compose --profile tools run --rm ingestion
+  # --rm removes the stopped container after it exits (keeps things clean).
+  ingestion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    command: uv run python -c "from src.rag_ingestion.rag_ingestion import ingestion; ingestion()"
+
+    env_file:
+      - .env
+
+    environment:
+      # Same vector store path override as the backend
+      - VECTOR_STORE_DIR=/app/vector_store
+
+      # Point DOCUMENTS_DIR to where we mount the docs folder inside the container.
+      - DOCUMENTS_DIR=/app/docs
+
+    volumes:
+      # Same as the backend: ingestion writes here, backend reads from here.
+      - vector_store:/app/vector_store
+
+      # Mount the local docs_dir/ folder into the container.
+      # :ro (read-only) is a safety measure: the container can only read your PDFs
+      - ./docs_dir:/app/docs:ro
+
+      # Reuse the same HuggingFace cache so the embedding model download is
+      # shared between ingestion and the backend.
+      - huggingface_cache:/root/.cache/huggingface
+
+    # profiles: means this service is excluded from the default `docker compose up`.
+    # It only activates when you pass --profile tools explicitly.
+    profiles:
+      - tools
+
+  # Runs the RAGAS evaluation suite and exits.
+  # Uses the same vector_store volume as the backend so it evaluates the live data.
+  #   docker compose --profile tools run --rm evaluation
+  evaluation:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    command: uv run python -m src.evaluation.evaluate
+
+    env_file:
+      - .env
+
+    environment:
+      - VECTOR_STORE_DIR=/app/vector_store
+
+    volumes:
+      # Read the same vector store the backend uses
+      - vector_store:/app/vector_store
+
+      # Reuse cached embedding models — avoids re-downloading on every run
+      - huggingface_cache:/root/.cache/huggingface
+
+    profiles:
+      - tools
+
+# Named volumes are managed by Docker. They persist independently of containers.
+# Deleting a container does not delete its volumes. You need `docker volume rm`
+# or `docker compose down -v` to remove them
+volumes:
+  redis_data: # Redis cache persistence (RDB snapshots)
+  vector_store: # ChromaDB vector store (shared by backend and ingestion)
+  huggingface_cache: # Downloaded HuggingFace models (shared by all services)

@@ -1,0 +1,135 @@
+name: CI / CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ── 1. Lint — runs on every push and PR ──────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Ruff check
+        run: uvx ruff check src/
+
+  # ── 2. Build & push to ECR — only on pushes to main ──────────────────────
+  build-push:
+    name: Build & Push
+    needs: lint
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag & push
+        run: |
+          IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPO }}"
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+  # ── 3. Deploy to EC2 — runs after a successful build ─────────────────────
+  deploy:
+    name: Deploy
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build the .env file from GitHub Secrets.
+      # Values are passed through env vars (not inline) so shell-special
+      # characters in secrets (e.g. $ in the bcrypt hash) are never
+      # interpreted by the shell.
+      - name: Generate .env
+        env:
+          GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
+          SECRET_KEY:          ${{ secrets.SECRET_KEY }}
+          ADMIN_PASSWORD_HASH: ${{ secrets.ADMIN_PASSWORD_HASH }}
+          LANGCHAIN_API_KEY:   ${{ secrets.LANGCHAIN_API_KEY }}
+          LANGSMITH_API_KEY:   ${{ secrets.LANGSMITH_API_KEY }}
+        run: |
+          python3 - <<'PYEOF'
+          import os
+          pairs = [
+              ("GROQ_API_KEY",         os.environ["GROQ_API_KEY"]),
+              ("MODEL_NAME",           "llama-3.3-70b-versatile"),
+              ("MODEL_TEMPERATURE",    "0.0"),
+              ("COLLECTION_NAME",      "my_collection1"),
+              ("CHAT_ENDPOINT_URL",    "http://localhost:8000/chat/answer"),
+              ("CHAT_STREAM_URL",      "http://localhost:8000/chat/stream"),
+              ("REDIS_URL",            "redis://localhost:6379"),
+              ("DOCUMENTS_DIR",        "/app/docs"),
+              ("VECTOR_STORE_DIR",     "/app/vector_store"),
+              ("SECRET_KEY",           os.environ["SECRET_KEY"]),
+              ("JWT_ALGORITHM",        "HS256"),
+              ("JWT_EXPIRE_MINUTES",   "60"),
+              ("ADMIN_USERNAME",       "admin"),
+              ("ADMIN_PASSWORD_HASH",  os.environ["ADMIN_PASSWORD_HASH"]),
+              ("LANGCHAIN_TRACING_V2", "true"),
+              ("LANGCHAIN_API_KEY",    os.environ.get("LANGCHAIN_API_KEY", "")),
+              ("LANGCHAIN_PROJECT",    "rag-project"),
+              ("LANGSMITH_API_KEY",    os.environ.get("LANGSMITH_API_KEY", "")),
+              ("LOG_FORMAT",           "json"),
+          ]
+          # Single-quote all values so Docker Compose never interpolates $ chars
+          with open(".env", "w") as f:
+              for key, val in pairs:
+                  f.write(f"{key}='{val}'\n")
+          PYEOF
+
+      - name: Copy compose files & .env to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          source:   ".env,docker-compose.yml,docker-compose.prod.yml"
+          target:   /home/ubuntu/app
+
+      - name: Deploy on EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            ECR_REGISTRY="${{ secrets.ECR_REGISTRY }}"
+            ECR_REPO="${{ secrets.ECR_REPO }}"
+            IMAGE_TAG="${{ needs.build-push.outputs.image_tag }}"
+
+            # Authenticate Docker to ECR using the EC2 instance IAM role
+            aws ecr get-login-password --region "${{ secrets.AWS_REGION }}" \
+              | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+            cd /home/ubuntu/app
+            export ECR_REGISTRY ECR_REPO IMAGE_TAG
+
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+            # Remove dangling images to keep disk clean
+            docker image prune -f
