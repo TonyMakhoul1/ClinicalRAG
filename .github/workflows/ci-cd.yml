@@ -55,18 +55,17 @@ jobs:
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:latest"
 
-  # ── 3. Deploy to EC2 — runs after a successful build ─────────────────────
+  # ── 3. Deploy — runs directly on the EC2 self-hosted runner ─────────────
   deploy:
     name: Deploy
     needs: build-push
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
       # Build the .env file from GitHub Secrets.
-      # Values are passed through env vars (not inline) so shell-special
-      # characters in secrets (e.g. $ in the bcrypt hash) are never
-      # interpreted by the shell.
+      # Values are passed through env vars so shell-special characters
+      # (e.g. $ in the bcrypt hash) are never interpreted by the shell.
       - name: Generate .env
         env:
           GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
@@ -104,35 +103,17 @@ jobs:
                   f.write(f"{key}='{val}'\n")
           PYEOF
 
-      - name: Copy compose files & .env to EC2
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host:     ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key:      ${{ secrets.EC2_SSH_KEY }}
-          source:   ".env,docker-compose.yml,docker-compose.prod.yml"
-          target:   /home/ubuntu/app
+      - name: Log in to ECR
+        run: |
+          aws ecr get-login-password --region eu-west-2 \
+            | docker login --username AWS --password-stdin "${{ secrets.ECR_REGISTRY }}"
 
-      - name: Deploy on EC2
-        uses: appleboy/ssh-action@v1
-        with:
-          host:     ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key:      ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            ECR_REGISTRY="${{ secrets.ECR_REGISTRY }}"
-            ECR_REPO="${{ secrets.ECR_REPO }}"
-            IMAGE_TAG="${{ needs.build-push.outputs.image_tag }}"
-
-            # Authenticate Docker to ECR using the EC2 instance IAM role
-            aws ecr get-login-password --region "eu-west-2" \
-              | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-
-            cd /home/ubuntu/app
-            export ECR_REGISTRY ECR_REPO IMAGE_TAG
-
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-
-            # Remove dangling images to keep disk clean
-            docker image prune -f
+      - name: Pull & restart
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          ECR_REPO:     ${{ secrets.ECR_REPO }}
+          IMAGE_TAG:    ${{ needs.build-push.outputs.image_tag }}
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+          docker image prune -f
